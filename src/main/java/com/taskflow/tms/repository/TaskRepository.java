@@ -12,4 +12,15 @@ public interface TaskRepository extends JpaRepository<Task, UUID> {
     List<Task> findByAssigneeId(UUID assigneeId);
 
     boolean existsByParentTaskId(UUID taskId);
+
+    List<Task> findByProjectIdAndStatusIdOrderByPosition(
+            UUID projectId,
+            UUID statusId
+    );
+
+    List<Task> findByProjectIdAndStatusIdAndPositionGreaterThanEqual(
+            UUID projectId,
+            UUID statusId,
+            Integer position
+    );
 }

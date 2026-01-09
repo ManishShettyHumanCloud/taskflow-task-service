@@ -1,6 +1,7 @@
 package com.taskflow.tms.controllers;
 
 import com.taskflow.tms.dtos.CreateTaskRequest;
+import com.taskflow.tms.dtos.MoveTaskRequest;
 import com.taskflow.tms.dtos.TaskResponse;
 import com.taskflow.tms.dtos.UpdateTaskRequest;
 import com.taskflow.tms.entities.Task;
@@ -72,6 +73,15 @@ public class TaskController {
       return taskService.getTasksByUser(assigneeId);
    }
 
+
+
+   @PutMapping("/{taskId}/move")
+   public void moveTask(
+           @PathVariable UUID taskId,
+           @RequestBody MoveTaskRequest request
+   ) {
+      taskService.moveTask(taskId, request);
+   }
 
 
 }

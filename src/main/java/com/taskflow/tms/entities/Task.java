@@ -42,6 +42,11 @@ public class Task {
     @Column(nullable = false)
     private UUID statusId;
 
+
+    @Column(nullable = false)
+    private Integer position;
+
+
     private UUID assigneeId;
 
     @Enumerated(EnumType.STRING)

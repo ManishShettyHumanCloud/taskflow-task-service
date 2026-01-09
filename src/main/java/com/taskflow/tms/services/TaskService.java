@@ -1,12 +1,13 @@
 package com.taskflow.tms.services;
 
 
-import com.taskflow.tms.dtos.CreateTaskRequest;
-import com.taskflow.tms.dtos.TaskResponse;
-import com.taskflow.tms.dtos.UpdateTaskRequest;
+import com.taskflow.tms.clients.ProjectServiceClient;
+import com.taskflow.tms.dtos.*;
 import com.taskflow.tms.entities.Task;
 import com.taskflow.tms.enums.TaskType;
+import com.taskflow.tms.exceptions.ProjectNotFoundException;
 import com.taskflow.tms.repository.TaskRepository;
+import feign.FeignException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -20,8 +21,11 @@ import java.util.UUID;
 public class TaskService {
 
     private final TaskRepository taskRepository;
+    private final ProjectServiceClient projectServiceClient;
 
     public TaskResponse createTask(CreateTaskRequest createTaskRequest){
+        // Validate project exists
+        validateProjectExists(createTaskRequest.projectId());
         validateHierarchy(createTaskRequest);
         validateParentType(createTaskRequest);
         Task task= Task.builder()
@@ -72,6 +76,46 @@ public class TaskService {
         }
     }
 
+    @Transactional
+    public void moveTask(UUID taskId, MoveTaskRequest request) {
+
+        Task task = taskRepository.findById(taskId)
+                .orElseThrow(() -> new RuntimeException("Task not found"));
+
+        UUID oldStatusId = task.getStatusId();
+        UUID newStatusId = request.statusId();
+
+        // 1️⃣ Close gap in old column
+        List<Task> oldColumnTasks =
+                taskRepository.findByProjectIdAndStatusIdAndPositionGreaterThanEqual(
+                        task.getProjectId(),
+                        oldStatusId,
+                        task.getPosition()
+                );
+
+        for (Task t : oldColumnTasks) {
+            t.setPosition(t.getPosition() - 1);
+        }
+
+        // 2️⃣ Make space in new column
+        List<Task> newColumnTasks =
+                taskRepository.findByProjectIdAndStatusIdAndPositionGreaterThanEqual(
+                        task.getProjectId(),
+                        newStatusId,
+                        request.position()
+                );
+
+        for (Task t : newColumnTasks) {
+            t.setPosition(t.getPosition() + 1);
+        }
+
+        // 3️⃣ Move task
+        task.setStatusId(newStatusId);
+        task.setPosition(request.position());
+
+        taskRepository.save(task);
+    }
+
     public void validateParentType(CreateTaskRequest request){
         if (request.parentTaskId() == null) return;
 
@@ -102,6 +146,12 @@ public class TaskService {
 
         Task task = taskRepository.findById(taskId)
                 .orElseThrow(() -> new IllegalArgumentException("Task not found"));
+
+        // Validate project if it's being changed
+        if (request.projectId() != null && !request.projectId().equals(task.getProjectId())) {
+            validateProjectExists(request.projectId());
+            task.setProjectId(request.projectId());
+        }
 
         if (request.title() != null)
             task.setTitle(request.title());
@@ -151,5 +201,15 @@ public class TaskService {
                 .toList();
     }
 
+    private void validateProjectExists(UUID projectId) {
+        try {
+            ProjectDTO project = projectServiceClient.getProjectById(projectId);
+            if (project == null) {
+                throw new ProjectNotFoundException("Project with ID " + projectId + " does not exist");
+            }
+        } catch (FeignException.NotFound e) {
+            throw new ProjectNotFoundException("Project with ID " + projectId + " does not exist");
+        }
+    }
 
 }

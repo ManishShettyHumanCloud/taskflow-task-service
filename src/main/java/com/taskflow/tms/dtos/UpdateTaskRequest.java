@@ -9,6 +9,7 @@ import java.util.UUID;
 public record UpdateTaskRequest(
         String title,
         String description,
+        UUID projectId,
         UUID statusId,
         UUID assigneeId,
         Priority priority,
