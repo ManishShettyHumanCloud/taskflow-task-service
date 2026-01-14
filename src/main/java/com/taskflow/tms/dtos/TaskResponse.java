@@ -18,6 +18,7 @@ public record TaskResponse(
         UUID assigneeId,
         Priority priority,
         LocalDate dueDate,
+        LocalDate startDate,
         Instant createdAt,
         Instant updatedAt
 ) {

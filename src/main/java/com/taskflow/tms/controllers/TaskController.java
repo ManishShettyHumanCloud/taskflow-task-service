@@ -37,6 +37,12 @@ public class TaskController {
       return ResponseEntity.ok(taskService.getTaskById(id));
    }
 
+   @Operation(summary="Get subtasks by parent ID")
+   @GetMapping("/{id}/subtasks")
+   public ResponseEntity<List<TaskResponse>> getSubtasks(@PathVariable UUID id){
+       return ResponseEntity.ok(taskService.getSubtasks(id));
+   }
+
 
    @Operation(summary="Get All tasks")
    @GetMapping("/all")
@@ -71,6 +77,12 @@ public class TaskController {
            @RequestParam UUID assigneeId
    ) {
       return taskService.getTasksByUser(assigneeId);
+   }
+
+   @Operation(summary = "Get tasks by project ID")
+   @GetMapping(params = "projectId")
+   public List<TaskResponse> getTasksByProject(@RequestParam UUID projectId) {
+      return taskService.getTasksByProject(projectId);
    }
 
 

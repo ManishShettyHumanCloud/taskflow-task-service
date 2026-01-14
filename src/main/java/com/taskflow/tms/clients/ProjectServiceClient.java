@@ -7,7 +7,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 
 import java.util.UUID;
 
-@FeignClient(name = "project-service")
+@FeignClient(name = "project-service", configuration = com.taskflow.tms.config.FeignConfig.class)
 public interface ProjectServiceClient {
     
     @GetMapping("/api/projects/{id}")
