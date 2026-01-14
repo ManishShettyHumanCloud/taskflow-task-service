@@ -8,6 +8,7 @@ import com.taskflow.tms.enums.TaskType;
 import com.taskflow.tms.exceptions.ProjectNotFoundException;
 import com.taskflow.tms.repository.TaskRepository;
 import feign.FeignException;
+import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -18,7 +19,7 @@ import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
-public class TaskService {
+public class  TaskService {
 
     private final TaskRepository taskRepository;
     private final ProjectServiceClient projectServiceClient;
@@ -28,6 +29,12 @@ public class TaskService {
         validateProjectExists(createTaskRequest.projectId());
         validateHierarchy(createTaskRequest);
         validateParentType(createTaskRequest);
+        
+        Integer position = taskRepository.findMaxPosition(
+                createTaskRequest.projectId(), 
+                createTaskRequest.statusId()
+        ).orElse(0) + 1;
+
         Task task= Task.builder()
                 .title(createTaskRequest.title())
                 .description(createTaskRequest.description())
@@ -37,7 +44,9 @@ public class TaskService {
                 .statusId(createTaskRequest.statusId())
                 .assigneeId(createTaskRequest.assigneeId())
                 .dueDate(createTaskRequest.dueDate())
+                .startDate(createTaskRequest.startDate())
                 .priority(createTaskRequest.priority())
+                .position(position)
                 .createdAt(Instant.now())
                 .updatedAt(Instant.now())
                 .build();
@@ -59,6 +68,7 @@ public class TaskService {
                 task.getAssigneeId(),
                 task.getPriority(),
                 task.getDueDate(),
+                task.getStartDate(),
                 task.getCreatedAt(),
                 task.getUpdatedAt()
         );
@@ -196,6 +206,21 @@ public class TaskService {
 
     public List<TaskResponse> getTasksByUser(UUID userId) {
         return taskRepository.findByAssigneeId(userId)
+                .stream()
+                .map(this::mapToResponse)
+                .toList();
+    }
+
+    public List<TaskResponse> getTasksByProject(UUID projectId) {
+        validateProjectExists(projectId);
+        return taskRepository.findByProjectId(projectId)
+                .stream()
+                .map(this::mapToResponse)
+                .toList();
+    }
+
+    public List<TaskResponse> getSubtasks(UUID parentTaskId) {
+        return taskRepository.findByParentTaskId(parentTaskId)
                 .stream()
                 .map(this::mapToResponse)
                 .toList();

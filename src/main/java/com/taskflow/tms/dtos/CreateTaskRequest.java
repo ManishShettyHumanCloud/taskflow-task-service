@@ -33,6 +33,8 @@ public record CreateTaskRequest(
         @NotNull(message = "Priority is required")
         Priority priority,
 
-        LocalDate dueDate
+        LocalDate dueDate,
+        
+        LocalDate startDate
 ) {
 }
