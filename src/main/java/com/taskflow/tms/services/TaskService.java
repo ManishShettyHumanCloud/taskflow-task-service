@@ -6,6 +6,7 @@ import com.taskflow.tms.dtos.*;
 import com.taskflow.tms.entities.Task;
 import com.taskflow.tms.enums.TaskType;
 import com.taskflow.tms.exceptions.ProjectNotFoundException;
+import com.taskflow.tms.publisher.TaskEventPublisher;
 import com.taskflow.tms.repository.TaskRepository;
 import feign.FeignException;
 import jakarta.transaction.Transactional;
@@ -19,10 +20,11 @@ import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
-public class  TaskService {
+public class TaskService {
 
     private final TaskRepository taskRepository;
     private final ProjectServiceClient projectServiceClient;
+    private final TaskEventPublisher taskEventPublisher;
 
     public TaskResponse createTask(CreateTaskRequest createTaskRequest){
         // Validate project exists
@@ -51,6 +53,18 @@ public class  TaskService {
                 .updatedAt(Instant.now())
                 .build();
         Task saved=taskRepository.save(task);
+        
+        // Publish Kafka event if task is assigned during creation
+        if (createTaskRequest.assigneeId() != null) {
+            taskEventPublisher.publishTaskAssigned(
+                    saved.getTaskId(),
+                    createTaskRequest.assigneeId(),
+                    saved.getTitle(),
+                    "System", // TODO: Get actual user from X-User-Id header
+                    saved.getProjectId()
+            );
+        }
+        
         return mapToResponse(saved);
 
 
@@ -157,6 +171,10 @@ public class  TaskService {
         Task task = taskRepository.findById(taskId)
                 .orElseThrow(() -> new IllegalArgumentException("Task not found"));
 
+        // Track if assignee changed for Kafka event
+        UUID oldAssigneeId = task.getAssigneeId();
+        boolean assigneeChanged = false;
+
         // Validate project if it's being changed
         if (request.projectId() != null && !request.projectId().equals(task.getProjectId())) {
             validateProjectExists(request.projectId());
@@ -172,8 +190,10 @@ public class  TaskService {
         if (request.statusId() != null)
             task.setStatusId(request.statusId());
 
-        if (request.assigneeId() != null)
+        if (request.assigneeId() != null && !request.assigneeId().equals(oldAssigneeId)) {
             task.setAssigneeId(request.assigneeId());
+            assigneeChanged = true;
+        }
 
         if (request.priority() != null)
             task.setPriority(request.priority());
@@ -186,7 +206,20 @@ public class  TaskService {
 
         task.setUpdatedAt(Instant.now());
 
-        return mapToResponse(taskRepository.save(task));
+        Task savedTask = taskRepository.save(task);
+
+        // Publish Kafka event if assignee changed
+        if (assigneeChanged && request.assigneeId() != null) {
+            taskEventPublisher.publishTaskAssigned(
+                    savedTask.getTaskId(),
+                    request.assigneeId(),
+                    savedTask.getTitle(),
+                    "System", // TODO: Get actual user from X-User-Id header
+                    savedTask.getProjectId()
+            );
+        }
+
+        return mapToResponse(savedTask);
     }
 
 
