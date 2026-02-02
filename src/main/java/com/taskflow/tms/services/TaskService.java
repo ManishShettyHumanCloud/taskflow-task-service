@@ -1,11 +1,13 @@
 package com.taskflow.tms.services;
 
-
 import com.taskflow.tms.clients.ProjectServiceClient;
+import com.taskflow.tms.clients.UserServiceClient;
 import com.taskflow.tms.dtos.*;
+import com.taskflow.tms.dto.events.TaskAssignedEvent;
 import com.taskflow.tms.entities.Task;
 import com.taskflow.tms.enums.TaskType;
 import com.taskflow.tms.exceptions.ProjectNotFoundException;
+import com.taskflow.tms.publisher.TaskEventPublisher;
 import com.taskflow.tms.repository.TaskRepository;
 import feign.FeignException;
 import jakarta.transaction.Transactional;
@@ -19,23 +21,24 @@ import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
-public class  TaskService {
+public class TaskService {
 
     private final TaskRepository taskRepository;
     private final ProjectServiceClient projectServiceClient;
+    private final UserServiceClient userServiceClient;
+    private final TaskEventPublisher taskEventPublisher;
 
-    public TaskResponse createTask(CreateTaskRequest createTaskRequest){
+    public TaskResponse createTask(CreateTaskRequest createTaskRequest) {
         // Validate project exists
         validateProjectExists(createTaskRequest.projectId());
         validateHierarchy(createTaskRequest);
         validateParentType(createTaskRequest);
-        
-        Integer position = taskRepository.findMaxPosition(
-                createTaskRequest.projectId(), 
-                createTaskRequest.statusId()
-        ).orElse(0) + 1;
 
-        Task task= Task.builder()
+        Integer position = taskRepository.findMaxPosition(
+                createTaskRequest.projectId(),
+                createTaskRequest.statusId()).orElse(0) + 1;
+
+        Task task = Task.builder()
                 .title(createTaskRequest.title())
                 .description(createTaskRequest.description())
                 .taskType(createTaskRequest.taskType())
@@ -50,13 +53,42 @@ public class  TaskService {
                 .createdAt(Instant.now())
                 .updatedAt(Instant.now())
                 .build();
-        Task saved=taskRepository.save(task);
-        return mapToResponse(saved);
+        Task saved = taskRepository.save(task);
 
+        // Publish Kafka event if task is assigned during creation
+        if (createTaskRequest.assigneeId() != null) {
+            try {
+                UserServiceClient.UserResponse user = userServiceClient.getUserById(createTaskRequest.assigneeId());
+                ProjectDTO project = projectServiceClient.getProjectById(saved.getProjectId());
+
+                TaskAssignedEvent event = TaskAssignedEvent.builder()
+                        .taskId(saved.getTaskId())
+                        .title(saved.getTitle())
+                        .description(saved.getDescription())
+                        .priority(saved.getPriority() != null ? saved.getPriority().name() : null)
+                        .dueDate(saved.getDueDate() != null ? saved.getDueDate().atStartOfDay() : null)
+                        .assignee(TaskAssignedEvent.UserDetails.builder()
+                                .name(user.getName())
+                                .email(user.getEmail())
+                                .build())
+                        .assigneeId(saved.getAssigneeId())
+                        .assignedBy("System") // TODO: Get from context
+                        .projectName(project.getName())
+                        .timestamp(java.time.LocalDateTime.now())
+                        .build();
+
+                taskEventPublisher.publishTaskAssigned(event);
+            } catch (Exception e) {
+                // Log but don't fail task creation
+                System.err.println("Failed to publish task assignment event: " + e.getMessage());
+            }
+        }
+
+        return mapToResponse(saved);
 
     }
 
-    public TaskResponse mapToResponse(Task task){
+    public TaskResponse mapToResponse(Task task) {
         return new TaskResponse(
                 task.getTaskId(),
                 task.getTitle(),
@@ -70,15 +102,14 @@ public class  TaskService {
                 task.getDueDate(),
                 task.getStartDate(),
                 task.getCreatedAt(),
-                task.getUpdatedAt()
-        );
+                task.getUpdatedAt());
     }
 
-    private void validateHierarchy(CreateTaskRequest request){
-        if(request.taskType() == TaskType.EPIC && request.parentTaskId() != null){
+    private void validateHierarchy(CreateTaskRequest request) {
+        if (request.taskType() == TaskType.EPIC && request.parentTaskId() != null) {
             throw new IllegalArgumentException("Epic cannot have parent task");
         }
-        if(request.taskType()==TaskType.USER_STORY && request.parentTaskId()==null){
+        if (request.taskType() == TaskType.USER_STORY && request.parentTaskId() == null) {
             throw new IllegalArgumentException("User story must belong to an epic");
         }
         if (request.taskType() == TaskType.SUBTASK && request.parentTaskId() == null) {
@@ -96,24 +127,20 @@ public class  TaskService {
         UUID newStatusId = request.statusId();
 
         // 1️⃣ Close gap in old column
-        List<Task> oldColumnTasks =
-                taskRepository.findByProjectIdAndStatusIdAndPositionGreaterThanEqual(
-                        task.getProjectId(),
-                        oldStatusId,
-                        task.getPosition()
-                );
+        List<Task> oldColumnTasks = taskRepository.findByProjectIdAndStatusIdAndPositionGreaterThanEqual(
+                task.getProjectId(),
+                oldStatusId,
+                task.getPosition());
 
         for (Task t : oldColumnTasks) {
             t.setPosition(t.getPosition() - 1);
         }
 
         // 2️⃣ Make space in new column
-        List<Task> newColumnTasks =
-                taskRepository.findByProjectIdAndStatusIdAndPositionGreaterThanEqual(
-                        task.getProjectId(),
-                        newStatusId,
-                        request.position()
-                );
+        List<Task> newColumnTasks = taskRepository.findByProjectIdAndStatusIdAndPositionGreaterThanEqual(
+                task.getProjectId(),
+                newStatusId,
+                request.position());
 
         for (Task t : newColumnTasks) {
             t.setPosition(t.getPosition() + 1);
@@ -126,8 +153,9 @@ public class  TaskService {
         taskRepository.save(task);
     }
 
-    public void validateParentType(CreateTaskRequest request){
-        if (request.parentTaskId() == null) return;
+    public void validateParentType(CreateTaskRequest request) {
+        if (request.parentTaskId() == null)
+            return;
 
         Task parent = taskRepository.findById(request.parentTaskId())
                 .orElseThrow(() -> new IllegalArgumentException("Parent task not found"));
@@ -143,7 +171,7 @@ public class  TaskService {
     }
 
     public TaskResponse getTaskById(UUID id) {
-        Optional<Task> task=taskRepository.findById(id);
+        Optional<Task> task = taskRepository.findById(id);
         return mapToResponse(task.get());
     }
 
@@ -156,6 +184,10 @@ public class  TaskService {
 
         Task task = taskRepository.findById(taskId)
                 .orElseThrow(() -> new IllegalArgumentException("Task not found"));
+
+        // Track if assignee changed for Kafka event
+        UUID oldAssigneeId = task.getAssigneeId();
+        boolean assigneeChanged = false;
 
         // Validate project if it's being changed
         if (request.projectId() != null && !request.projectId().equals(task.getProjectId())) {
@@ -172,8 +204,10 @@ public class  TaskService {
         if (request.statusId() != null)
             task.setStatusId(request.statusId());
 
-        if (request.assigneeId() != null)
+        if (request.assigneeId() != null && !request.assigneeId().equals(oldAssigneeId)) {
             task.setAssigneeId(request.assigneeId());
+            assigneeChanged = true;
+        }
 
         if (request.priority() != null)
             task.setPriority(request.priority());
@@ -186,9 +220,38 @@ public class  TaskService {
 
         task.setUpdatedAt(Instant.now());
 
-        return mapToResponse(taskRepository.save(task));
-    }
+        Task savedTask = taskRepository.save(task);
 
+        // Publish Kafka event if assignee changed
+        if (assigneeChanged && request.assigneeId() != null) {
+            try {
+                UserServiceClient.UserResponse user = userServiceClient.getUserById(request.assigneeId());
+                ProjectDTO project = projectServiceClient.getProjectById(savedTask.getProjectId());
+
+                TaskAssignedEvent event = TaskAssignedEvent.builder()
+                        .taskId(savedTask.getTaskId())
+                        .title(savedTask.getTitle())
+                        .description(savedTask.getDescription())
+                        .priority(savedTask.getPriority() != null ? savedTask.getPriority().name() : null)
+                        .dueDate(savedTask.getDueDate() != null ? savedTask.getDueDate().atStartOfDay() : null)
+                        .assignee(TaskAssignedEvent.UserDetails.builder()
+                                .name(user.getName())
+                                .email(user.getEmail())
+                                .build())
+                        .assigneeId(savedTask.getAssigneeId())
+                        .assignedBy("System") // TODO: Get from context
+                        .projectName(project.getName())
+                        .timestamp(java.time.LocalDateTime.now())
+                        .build();
+
+                taskEventPublisher.publishTaskAssigned(event);
+            } catch (Exception e) {
+                System.err.println("Failed to publish task assignment event: " + e.getMessage());
+            }
+        }
+
+        return mapToResponse(savedTask);
+    }
 
     public void deleteTask(UUID taskId) {
 
@@ -202,7 +265,6 @@ public class  TaskService {
 
         taskRepository.delete(task);
     }
-
 
     public List<TaskResponse> getTasksByUser(UUID userId) {
         return taskRepository.findByAssigneeId(userId)
